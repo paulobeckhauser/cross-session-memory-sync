@@ -1,0 +1,17 @@
+{
+  "name": "cross-session-sync-core",
+  "version": "0.1.0",
+  "description": "Framework-agnostic cross-session knowledge synchronization",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "bun build src/index.ts --outdir dist --target bun",
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0"
+  }
+}

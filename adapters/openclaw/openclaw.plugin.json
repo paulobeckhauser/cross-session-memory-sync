@@ -1,0 +1,46 @@
+{
+  "id": "cross-session-sync",
+  "name": "Cross-Session Knowledge Sync",
+  "version": "0.1.0",
+  "description": "Synchronizes knowledge across sessions via a shared Knowledge DAG with LCM-inspired hierarchical compression",
+  "entryPoint": "dist/index.js",
+  "hooks": [
+    "before_prompt_build",
+    "message:preprocessed"
+  ],
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "classifierModel": {
+        "type": "string",
+        "default": "claude-haiku-4-5-20251001",
+        "description": "Model used for fact extraction and classification"
+      },
+      "extractionEnabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "Whether to extract facts from turns"
+      },
+      "injectionEnabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "Whether to inject cross-session context"
+      },
+      "relevanceWindowHours": {
+        "type": "number",
+        "default": 24,
+        "description": "How far back to look for facts (hours)"
+      },
+      "maxInjectedTokens": {
+        "type": "number",
+        "default": 500,
+        "description": "Maximum tokens to inject as cross-session context"
+      },
+      "compressionThreshold": {
+        "type": "number",
+        "default": 20,
+        "description": "Number of d0 facts before triggering compression"
+      }
+    }
+  }
+}

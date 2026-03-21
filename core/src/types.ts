@@ -1,13 +1,15 @@
-export interface KnowledgeNugget {
+export interface DAGNode {
   id: string;
-  fact: string;
-  category: NuggetCategory;
+  depth: number; // 0=raw fact, 1+=summary
+  content: string;
+  category?: NuggetCategory;
   confidence: number;
-  sourceSession: string;
-  sourceChannel: string;
+  sourceSession?: string; // null for summaries
+  sourceChannel?: string; // null for summaries
+  parentId?: string; // → parent summary node
   createdAt: string; // ISO 8601
-  supersededBy?: string;
-  ttlHours?: number;
+  supersededBy?: string; // → newer conflicting fact
+  isCompressed: boolean; // true = folded into a parent summary
 }
 
 export type NuggetCategory =
@@ -36,16 +38,27 @@ export type ClassifierFn = (
   assistantMessage: string
 ) => Promise<ClassifiedNugget[] | null>;
 
-export interface SyncConfig {
+export type CompressorFn = (
+  facts: string[],
+  depth: number
+) => Promise<string>;
+
+export interface DAGSyncConfig {
   dbPath: string;
   classifierFn: ClassifierFn;
+  compressorFn: CompressorFn;
   relevanceWindowHours: number;
   maxInjectedTokens: number;
   confidenceThreshold: number;
   noiseFilterPatterns: string[];
+  compressionThresholds: Record<number, number>; // depth → count threshold
+  maxDepth: number;
 }
 
-export const DEFAULT_CONFIG: Omit<SyncConfig, "dbPath" | "classifierFn"> = {
+export const DEFAULT_DAG_CONFIG: Omit<
+  DAGSyncConfig,
+  "dbPath" | "classifierFn" | "compressorFn"
+> = {
   relevanceWindowHours: 24,
   maxInjectedTokens: 500,
   confidenceThreshold: 0.6,
@@ -71,4 +84,6 @@ export const DEFAULT_CONFIG: Omit<SyncConfig, "dbPath" | "classifierFn"> = {
     "😂",
     "😊",
   ],
+  compressionThresholds: { 0: 20, 1: 10, 2: 5 },
+  maxDepth: 4,
 };

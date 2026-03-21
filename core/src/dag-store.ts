@@ -1,0 +1,222 @@
+import Database from "bun:sqlite";
+import type { DAGNode, NuggetCategory } from "./types.js";
+
+export class DAGStore {
+  private db: Database;
+
+  constructor(dbPath: string) {
+    this.db = new Database(dbPath);
+    this.db.exec("PRAGMA journal_mode = WAL");
+    this.db.exec("PRAGMA foreign_keys = ON");
+    this.init();
+  }
+
+  private init(): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS dag_nodes (
+        id              TEXT PRIMARY KEY,
+        depth           INTEGER NOT NULL DEFAULT 0,
+        content         TEXT NOT NULL,
+        category        TEXT,
+        confidence      REAL NOT NULL DEFAULT 1.0,
+        source_session  TEXT,
+        source_channel  TEXT,
+        parent_id       TEXT,
+        created_at      TEXT NOT NULL,
+        superseded_by   TEXT,
+        is_compressed   INTEGER NOT NULL DEFAULT 0
+      );
+
+      CREATE TABLE IF NOT EXISTS dag_lineage (
+        summary_id  TEXT NOT NULL,
+        source_id   TEXT NOT NULL,
+        PRIMARY KEY (summary_id, source_id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_depth ON dag_nodes(depth);
+      CREATE INDEX IF NOT EXISTS idx_active ON dag_nodes(superseded_by) WHERE superseded_by IS NULL;
+      CREATE INDEX IF NOT EXISTS idx_uncompressed ON dag_nodes(is_compressed) WHERE is_compressed = 0;
+      CREATE INDEX IF NOT EXISTS idx_parent ON dag_nodes(parent_id);
+      CREATE INDEX IF NOT EXISTS idx_created ON dag_nodes(created_at);
+    `);
+  }
+
+  insertFact(fact: Omit<DAGNode, "depth" | "isCompressed" | "parentId" | "supersededBy">): void {
+    this.db
+      .query(
+        `INSERT INTO dag_nodes (id, depth, content, category, confidence, source_session, source_channel, created_at, is_compressed)
+         VALUES (?, 0, ?, ?, ?, ?, ?, ?, 0)`
+      )
+      .run(
+        fact.id,
+        fact.content,
+        fact.category ?? null,
+        fact.confidence,
+        fact.sourceSession ?? null,
+        fact.sourceChannel ?? null,
+        fact.createdAt
+      );
+  }
+
+  insertSummary(node: {
+    id: string;
+    depth: number;
+    content: string;
+    category?: NuggetCategory;
+    createdAt: string;
+    childIds: string[];
+  }): void {
+    const insertNode = this.db.query(
+      `INSERT INTO dag_nodes (id, depth, content, category, confidence, created_at, is_compressed)
+       VALUES (?, ?, ?, ?, 1.0, ?, 0)`
+    );
+    const insertLineage = this.db.query(
+      `INSERT INTO dag_lineage (summary_id, source_id) VALUES (?, ?)`
+    );
+    const markCompressed = this.db.query(
+      `UPDATE dag_nodes SET is_compressed = 1, parent_id = ? WHERE id = ?`
+    );
+
+    const tx = this.db.transaction(() => {
+      insertNode.run(
+        node.id,
+        node.depth,
+        node.content,
+        node.category ?? null,
+        node.createdAt
+      );
+      for (const childId of node.childIds) {
+        insertLineage.run(node.id, childId);
+        markCompressed.run(node.id, childId);
+      }
+    });
+    tx();
+  }
+
+  getActiveNodes(
+    excludeSession?: string,
+    maxDepth?: number
+  ): DAGNode[] {
+    let sql = `SELECT * FROM dag_nodes WHERE superseded_by IS NULL AND is_compressed = 0`;
+    const params: (string | number)[] = [];
+
+    if (excludeSession) {
+      sql += ` AND (source_session IS NULL OR source_session != ?)`;
+      params.push(excludeSession);
+    }
+    if (maxDepth !== undefined) {
+      sql += ` AND depth <= ?`;
+      params.push(maxDepth);
+    }
+    sql += ` ORDER BY depth ASC, created_at DESC`;
+
+    return this.db.query(sql).all(...params).map(rowToNode);
+  }
+
+  getUncompressedNodes(depth: number, category?: string): DAGNode[] {
+    let sql = `SELECT * FROM dag_nodes WHERE depth = ? AND is_compressed = 0 AND superseded_by IS NULL`;
+    const params: (string | number)[] = [depth];
+
+    if (category) {
+      sql += ` AND category = ?`;
+      params.push(category);
+    }
+    sql += ` ORDER BY created_at ASC`;
+
+    return this.db.query(sql).all(...params).map(rowToNode);
+  }
+
+  getCategories(depth: number): string[] {
+    const rows = this.db
+      .query(
+        `SELECT DISTINCT category FROM dag_nodes
+         WHERE depth = ? AND is_compressed = 0 AND superseded_by IS NULL AND category IS NOT NULL`
+      )
+      .all(depth) as { category: string }[];
+    return rows.map((r) => r.category);
+  }
+
+  supersede(oldId: string, newId: string): void {
+    this.db
+      .query(`UPDATE dag_nodes SET superseded_by = ? WHERE id = ?`)
+      .run(newId, oldId);
+  }
+
+  getLineage(summaryId: string): DAGNode[] {
+    const rows = this.db
+      .query(
+        `SELECT n.* FROM dag_nodes n
+         JOIN dag_lineage l ON n.id = l.source_id
+         WHERE l.summary_id = ?
+         ORDER BY n.created_at ASC`
+      )
+      .all(summaryId)
+      .map(rowToNode);
+    return rows;
+  }
+
+  getNodeById(id: string): DAGNode | null {
+    const row = this.db.query(`SELECT * FROM dag_nodes WHERE id = ?`).get(id);
+    return row ? rowToNode(row) : null;
+  }
+
+  getActiveFactsByCategory(category: string): DAGNode[] {
+    return this.db
+      .query(
+        `SELECT * FROM dag_nodes
+         WHERE category = ? AND depth = 0 AND superseded_by IS NULL AND is_compressed = 0
+         ORDER BY created_at DESC`
+      )
+      .all(category)
+      .map(rowToNode);
+  }
+
+  cleanup(olderThanHours: number): number {
+    const cutoff = new Date(
+      Date.now() - olderThanHours * 60 * 60 * 1000
+    ).toISOString();
+
+    // Only delete compressed or superseded nodes older than cutoff
+    const result = this.db
+      .query(
+        `DELETE FROM dag_nodes
+         WHERE created_at < ? AND (is_compressed = 1 OR superseded_by IS NOT NULL)`
+      )
+      .run(cutoff);
+
+    // Clean up orphaned lineage entries
+    this.db.exec(
+      `DELETE FROM dag_lineage WHERE source_id NOT IN (SELECT id FROM dag_nodes)`
+    );
+
+    return result.changes;
+  }
+
+  nodeCount(): number {
+    const row = this.db
+      .query(`SELECT COUNT(*) as count FROM dag_nodes`)
+      .get() as { count: number };
+    return row.count;
+  }
+
+  close(): void {
+    this.db.close();
+  }
+}
+
+function rowToNode(row: unknown): DAGNode {
+  const r = row as Record<string, unknown>;
+  return {
+    id: r.id as string,
+    depth: r.depth as number,
+    content: r.content as string,
+    category: (r.category as NuggetCategory) ?? undefined,
+    confidence: r.confidence as number,
+    sourceSession: (r.source_session as string) ?? undefined,
+    sourceChannel: (r.source_channel as string) ?? undefined,
+    parentId: (r.parent_id as string) ?? undefined,
+    createdAt: r.created_at as string,
+    supersededBy: (r.superseded_by as string) ?? undefined,
+    isCompressed: (r.is_compressed as number) === 1,
+  };
+}
