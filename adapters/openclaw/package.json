@@ -5,13 +5,14 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "openclaw": {
-    "extensions": ["./src/index.ts"]
+    "extensions": ["./dist/index.js"]
   },
   "scripts": {
     "build": "bun build src/index.ts --outdir dist --target bun --external better-sqlite3",
     "test": "bun test"
   },
   "dependencies": {
+    "better-sqlite3": "^11.0.0",
     "cross-session-sync-core": "file:../../core"
   },
   "devDependencies": {
