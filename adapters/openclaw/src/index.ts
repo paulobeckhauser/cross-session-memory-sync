@@ -15,23 +15,30 @@ interface PluginAPI {
   llm: {
     chat(options: { model: string; messages: Array<{ role: string; content: string }> }): Promise<string>;
   };
-  hooks: {
-    on(event: string, handler: (...args: unknown[]) => unknown): void;
-  };
-  services: {
-    register(name: string, service: { interval: number; fn: () => void }): void;
-  };
+  on(event: string, handler: (...args: unknown[]) => unknown, options?: { priority?: number }): void;
+  registerService(name: string, service: { interval: number; fn: () => void }): void;
 }
 
 interface BeforePromptBuildEvent {
   sessionKey: string;
 }
 
-interface MessagePreprocessedEvent {
-  userMessage: string;
-  assistantMessage: string;
+interface BeforePromptBuildContext {
   sessionKey: string;
-  channel: string;
+  sessionId: string;
+  channelId: string;
+}
+
+interface MessagePreprocessedEvent {
+  content: string;
+  from: string;
+  channelId: string;
+}
+
+interface MessagePreprocessedContext {
+  sessionKey: string;
+  channelId: string;
+  lastAssistantMessage?: string;
 }
 
 let engine: SyncEngine | null = null;
@@ -88,9 +95,10 @@ export function register(api: PluginAPI): void {
   engine = new SyncEngine(config);
 
   // Hook: inject cross-session context before prompt assembly
-  if (injectionEnabled && api.hooks) {
-    api.hooks.on("before_prompt_build", (event: unknown) => {
-      const { sessionKey } = event as BeforePromptBuildEvent;
+  if (injectionEnabled && api.on) {
+    api.on("before_prompt_build", (event: unknown, ctx: unknown) => {
+      const context = (ctx || event) as BeforePromptBuildContext;
+      const sessionKey = context.sessionKey;
       console.log(`[cross-session-sync] before_prompt_build for session: ${sessionKey}`);
       const block = engine!.getInjectionBlock(sessionKey, maxInjectedTokens);
       if (block) {
@@ -99,30 +107,32 @@ export function register(api: PluginAPI): void {
       }
       console.log("[cross-session-sync] no context to inject");
       return undefined;
-    });
-  } else {
-    console.log(`[cross-session-sync] hooks not registered: injectionEnabled=${injectionEnabled}, api.hooks=${!!api.hooks}`);
+    }, { priority: 10 });
   }
 
   // Hook: extract facts after each turn
-  if (extractionEnabled && api.hooks) {
-    api.hooks.on("message:preprocessed", (event: unknown) => {
-      const { userMessage, assistantMessage, sessionKey, channel } =
-        event as MessagePreprocessedEvent;
+  if (extractionEnabled && api.on) {
+    api.on("message:preprocessed", (event: unknown, ctx: unknown) => {
+      const ev = event as MessagePreprocessedEvent;
+      const context = (ctx || {}) as MessagePreprocessedContext;
+      const userMessage = ev.content || "";
+      const assistantMessage = context.lastAssistantMessage || "";
+      const sessionKey = context.sessionKey || "";
+      const channel = context.channelId || ev.channelId || "";
       console.log(`[cross-session-sync] message:preprocessed session=${sessionKey} channel=${channel} msg="${userMessage.slice(0, 80)}"`);
-      engine!.onTurnComplete({ userMessage, assistantMessage, sessionKey, channel }).catch((err) => {
+      engine!.onTurnComplete({ userMessage, assistantMessage, sessionKey, channel }).catch((err: unknown) => {
         console.error(`[cross-session-sync] extraction error:`, err);
       });
     });
-  } else {
-    console.log(`[cross-session-sync] extraction hooks not registered: extractionEnabled=${extractionEnabled}, api.hooks=${!!api.hooks}`);
   }
 
   // Service: periodic cleanup of old facts
-  api.services?.register("cross-session-sync-cleanup", {
-    interval: 6 * 60 * 60 * 1000, // every 6 hours
-    fn: () => engine!.cleanup(),
-  });
+  if (api.registerService) {
+    api.registerService("cross-session-sync-cleanup", {
+      interval: 6 * 60 * 60 * 1000, // every 6 hours
+      fn: () => engine!.cleanup(),
+    });
+  }
 }
 
 export function deactivate(): void {
