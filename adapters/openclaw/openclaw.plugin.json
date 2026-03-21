@@ -3,7 +3,7 @@
   "name": "Cross-Session Knowledge Sync",
   "version": "0.1.0",
   "description": "Synchronizes knowledge across sessions via a shared Knowledge DAG with LCM-inspired hierarchical compression",
-  "entryPoint": "dist/index.js",
+  "entryPoint": "src/index.ts",
   "hooks": [
     "before_prompt_build",
     "message:preprocessed"
