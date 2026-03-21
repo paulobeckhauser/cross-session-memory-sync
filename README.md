@@ -89,54 +89,98 @@ bun test       # Bun runtime
 
 ## OpenClaw Integration
 
-### 1. Install the plugin
+### 1. Enable internal hooks
+
+Add to your OpenClaw config (`~/.openclaw/openclaw.json`):
+
+```json
+{
+  "hooks": {
+    "internal": {
+      "enabled": true
+    }
+  }
+}
+```
+
+This is required for plugin hooks to dispatch events.
+
+### 2. Set up OpenAI API key
+
+The classifier uses the OpenAI API (default model: `gpt-4o-mini`). The plugin resolves the API key automatically from:
+
+1. `OPENAI_API_KEY` environment variable, or
+2. OpenClaw auth profiles (`~/.openclaw/agents/main/agent/auth-profiles.json`)
+
+If using OpenClaw's built-in auth, set it up via:
+
+```bash
+openclaw auth add openai
+```
+
+### 3. Install the plugin
 
 ```bash
 openclaw plugins install ./adapters/openclaw
 ```
 
-### 2. Configure
+### 4. Configure
 
-Add to your OpenClaw config:
+Add to your OpenClaw config (`~/.openclaw/openclaw.json`):
 
-```yaml
-plugins:
-  entries:
-    cross-session-sync:
-      enabled: true
-      config:
-        classifierModel: "claude-haiku-4-5-20251001"
-        extractionEnabled: true
-        injectionEnabled: true
-        compressionThreshold: 20
-        maxInjectedTokens: 500
-        relevanceWindowHours: 24
+```json
+{
+  "plugins": {
+    "entries": {
+      "cross-session-sync": {
+        "enabled": true,
+        "config": {
+          "classifierModel": "gpt-4o-mini",
+          "extractionEnabled": true,
+          "injectionEnabled": true,
+          "compressionThreshold": 20,
+          "maxInjectedTokens": 500,
+          "relevanceWindowHours": 24
+        }
+      }
+    }
+  }
+}
 ```
 
-### 3. Restart gateway
+### 5. Restart gateway
 
 ```bash
 openclaw gateway restart
 openclaw plugins list | grep cross-session
 ```
 
-### 4. Smoke test
+The plugin should show status **loaded**.
+
+### 6. Smoke test
 
 Send a message on one channel (e.g., Telegram):
 
-> "I have a dentist appointment on Friday at 3pm"
+> "My dog's name is Bidu"
 
-Then on another channel (e.g., Discord), ask:
+Then on another channel (e.g., Discord), send `/new` to reset the session and ask:
 
-> "Do I have any appointments this week?"
+> "What's my dog's name?"
 
-The assistant should surface the Friday dentist appointment from cross-session context.
+The assistant should surface "Bidu" from cross-session context.
+
+You can verify facts are being stored:
+
+```bash
+sqlite3 ~/.openclaw/memory/cross-session-sync-knowledge-dag.sqlite \
+  "SELECT content, category, source_channel, created_at FROM dag_nodes ORDER BY created_at DESC LIMIT 10;"
+```
 
 ## Configuration Options
 
 | Option | Default | Description |
 |---|---|---|
-| `classifierModel` | `claude-haiku-4-5-20251001` | Model for fact extraction |
+| `classifierModel` | `gpt-4o-mini` | OpenAI model for fact extraction |
 | `extractionEnabled` | `true` | Enable/disable fact extraction |
 | `injectionEnabled` | `true` | Enable/disable context injection |
 | `compressionThreshold` | `20` | d0 facts before compression triggers |
@@ -145,10 +189,28 @@ The assistant should surface the Friday dentist appointment from cross-session c
 
 ## How It Works
 
-1. **Extract** — After each LLM turn, a noise filter + LLM classifier decides if the conversation produced shareable knowledge
+1. **Extract** — On each incoming message (`message:preprocessed` hook), a noise filter + LLM classifier (gpt-4o-mini via OpenAI API) decides if the conversation contains shareable knowledge
 2. **Store** — Facts enter the Knowledge DAG as d0 leaf nodes in SQLite
 3. **Compress** — When d0 nodes exceed a threshold, they compress into d1 summaries; d1 into d2, recursively
-4. **Assemble** — Before each turn, recent d0 facts + compressed d1/d2 summaries are assembled into a token-bounded context block
-5. **Inject** — The context block is prepended to the system prompt via `before_prompt_build` hook
+4. **Assemble** — Before each agent turn (`agent:bootstrap` hook), recent d0 facts + compressed d1/d2 summaries are assembled into a token-bounded context block
+5. **Inject** — The context block is injected as a bootstrap file into the agent's system prompt
 
 Coexists with Lossless Claw (LCM) — uses plugin hooks, not the exclusive ContextEngine slot.
+
+## Troubleshooting
+
+**Plugin shows "error" status:**
+- Ensure `hooks.internal.enabled` is `true` in your OpenClaw config
+
+**No facts extracted:**
+- Check that `OPENAI_API_KEY` is set or OpenClaw auth profiles contain an OpenAI key
+- Check gateway logs: `journalctl --user -u openclaw-gateway -f | grep cross-session`
+
+**Facts extracted but not injected:**
+- Send `/new` on the target channel to start a fresh session (bootstrap hook fires on new sessions)
+- Verify facts exist: `sqlite3 ~/.openclaw/memory/cross-session-sync-knowledge-dag.sqlite "SELECT * FROM dag_nodes;"`
+
+**Clear all stored facts:**
+```bash
+sqlite3 ~/.openclaw/memory/cross-session-sync-knowledge-dag.sqlite "DELETE FROM dag_nodes; DELETE FROM dag_lineage;"
+```

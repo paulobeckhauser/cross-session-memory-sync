@@ -16,7 +16,7 @@ export interface SQLiteDatabase {
   close(): void;
 }
 
-const isBun = typeof globalThis.Bun !== "undefined";
+const isBun = typeof (globalThis as Record<string, unknown>).Bun !== "undefined";
 
 export function openDatabase(dbPath: string): SQLiteDatabase {
   if (isBun) {
