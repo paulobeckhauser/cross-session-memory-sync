@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { SyncEngine } from "../src/engine.js";
 import { DAGStore } from "../src/dag-store.js";
 import type { DAGSyncConfig, ClassifierFn, CompressorFn } from "../src/types.js";

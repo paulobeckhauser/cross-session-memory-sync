@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { Extractor } from "../src/extractor.js";
 import { DAGStore } from "../src/dag-store.js";
 import type { ClassifierFn, ClassifiedNugget } from "../src/types.js";

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { DAGStore } from "../src/dag-store.js";
 import { Compressor } from "../src/compressor.js";
 import type { CompressorFn } from "../src/types.js";

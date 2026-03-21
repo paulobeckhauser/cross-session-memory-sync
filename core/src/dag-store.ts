@@ -1,13 +1,12 @@
-import Database from "bun:sqlite";
+import { openDatabase } from "./sqlite-adapter.js";
+import type { SQLiteDatabase } from "./sqlite-adapter.js";
 import type { DAGNode, NuggetCategory } from "./types.js";
 
 export class DAGStore {
-  private db: Database;
+  private db: SQLiteDatabase;
 
   constructor(dbPath: string) {
-    this.db = new Database(dbPath);
-    this.db.exec("PRAGMA journal_mode = WAL");
-    this.db.exec("PRAGMA foreign_keys = ON");
+    this.db = openDatabase(dbPath);
     this.init();
   }
 
@@ -43,7 +42,7 @@ export class DAGStore {
 
   insertFact(fact: Omit<DAGNode, "depth" | "isCompressed" | "parentId" | "supersededBy">): void {
     this.db
-      .query(
+      .prepare(
         `INSERT INTO dag_nodes (id, depth, content, category, confidence, source_session, source_channel, created_at, is_compressed)
          VALUES (?, 0, ?, ?, ?, ?, ?, ?, 0)`
       )
@@ -66,14 +65,14 @@ export class DAGStore {
     createdAt: string;
     childIds: string[];
   }): void {
-    const insertNode = this.db.query(
+    const insertNode = this.db.prepare(
       `INSERT INTO dag_nodes (id, depth, content, category, confidence, created_at, is_compressed)
        VALUES (?, ?, ?, ?, 1.0, ?, 0)`
     );
-    const insertLineage = this.db.query(
+    const insertLineage = this.db.prepare(
       `INSERT INTO dag_lineage (summary_id, source_id) VALUES (?, ?)`
     );
-    const markCompressed = this.db.query(
+    const markCompressed = this.db.prepare(
       `UPDATE dag_nodes SET is_compressed = 1, parent_id = ? WHERE id = ?`
     );
 
@@ -110,7 +109,7 @@ export class DAGStore {
     }
     sql += ` ORDER BY depth ASC, created_at DESC`;
 
-    return this.db.query(sql).all(...params).map(rowToNode);
+    return this.db.prepare(sql).all(...params).map(rowToNode);
   }
 
   getUncompressedNodes(depth: number, category?: string): DAGNode[] {
@@ -123,12 +122,12 @@ export class DAGStore {
     }
     sql += ` ORDER BY created_at ASC`;
 
-    return this.db.query(sql).all(...params).map(rowToNode);
+    return this.db.prepare(sql).all(...params).map(rowToNode);
   }
 
   getCategories(depth: number): string[] {
     const rows = this.db
-      .query(
+      .prepare(
         `SELECT DISTINCT category FROM dag_nodes
          WHERE depth = ? AND is_compressed = 0 AND superseded_by IS NULL AND category IS NOT NULL`
       )
@@ -138,13 +137,13 @@ export class DAGStore {
 
   supersede(oldId: string, newId: string): void {
     this.db
-      .query(`UPDATE dag_nodes SET superseded_by = ? WHERE id = ?`)
+      .prepare(`UPDATE dag_nodes SET superseded_by = ? WHERE id = ?`)
       .run(newId, oldId);
   }
 
   getLineage(summaryId: string): DAGNode[] {
-    const rows = this.db
-      .query(
+    return this.db
+      .prepare(
         `SELECT n.* FROM dag_nodes n
          JOIN dag_lineage l ON n.id = l.source_id
          WHERE l.summary_id = ?
@@ -152,17 +151,16 @@ export class DAGStore {
       )
       .all(summaryId)
       .map(rowToNode);
-    return rows;
   }
 
   getNodeById(id: string): DAGNode | null {
-    const row = this.db.query(`SELECT * FROM dag_nodes WHERE id = ?`).get(id);
+    const row = this.db.prepare(`SELECT * FROM dag_nodes WHERE id = ?`).get(id);
     return row ? rowToNode(row) : null;
   }
 
   getActiveFactsByCategory(category: string): DAGNode[] {
     return this.db
-      .query(
+      .prepare(
         `SELECT * FROM dag_nodes
          WHERE category = ? AND depth = 0 AND superseded_by IS NULL AND is_compressed = 0
          ORDER BY created_at DESC`
@@ -176,15 +174,13 @@ export class DAGStore {
       Date.now() - olderThanHours * 60 * 60 * 1000
     ).toISOString();
 
-    // Only delete compressed or superseded nodes older than cutoff
     const result = this.db
-      .query(
+      .prepare(
         `DELETE FROM dag_nodes
          WHERE created_at < ? AND (is_compressed = 1 OR superseded_by IS NOT NULL)`
       )
       .run(cutoff);
 
-    // Clean up orphaned lineage entries
     this.db.exec(
       `DELETE FROM dag_lineage WHERE source_id NOT IN (SELECT id FROM dag_nodes)`
     );
@@ -194,7 +190,7 @@ export class DAGStore {
 
   nodeCount(): number {
     const row = this.db
-      .query(`SELECT COUNT(*) as count FROM dag_nodes`)
+      .prepare(`SELECT COUNT(*) as count FROM dag_nodes`)
       .get() as { count: number };
     return row.count;
   }

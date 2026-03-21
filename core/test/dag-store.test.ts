@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { DAGStore } from "../src/dag-store.js";
 import { randomUUID } from "crypto";
 import * as fs from "fs";

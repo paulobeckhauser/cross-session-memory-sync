@@ -24,50 +24,67 @@ adapters/openclaw/       # @openclaw/cross-session-sync plugin
 
 ## Prerequisites
 
-### Install Bun
+**Node.js (>= 18)** or **Bun (>= 1.0)** — either works.
+
+### Option A: Node.js (recommended for compatibility)
 
 ```bash
+# Install Node.js if not already installed
+# https://nodejs.org or via nvm:
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.0/install.sh | bash
+nvm install 22
+```
+
+### Option B: Bun (faster)
+
+```bash
+sudo apt-get install -y unzip  # required on some Linux distros
 curl -fsSL https://bun.sh/install | bash
-```
-
-After install, restart your shell or run:
-
-```bash
 source ~/.bashrc
-```
-
-Verify:
-
-```bash
-bun --version
 ```
 
 ## Setup
 
 ```bash
-# Clone
 git clone git@github.com:paulobeckhauser/cross-session-memory-sync.git
-cd cross-session-memory-sync
+cd cross-session-memory-sync/core
+```
 
-# Install dependencies and run tests
-cd core
+### With Node.js / npm
+
+```bash
+npm install
+npm test
+
+# Build
+npx tsc
+```
+
+### With Bun
+
+```bash
 bun install
 bun test
 
-# Build core library
+# Build
 bun run build
+```
 
-# Build OpenClaw adapter
+### Build OpenClaw adapter
+
+```bash
 cd ../adapters/openclaw
-bun install
-bun run build
+npm install   # or: bun install
+npm run build # or: bun run build
 ```
 
 ## Running Tests
 
 ```bash
 cd core
-bun test
+npm test       # Node.js + vitest
+# or
+bun test       # Bun runtime
 ```
 
 ## OpenClaw Integration
