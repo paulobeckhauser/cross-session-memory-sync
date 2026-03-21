@@ -88,7 +88,7 @@ export function register(api: PluginAPI): void {
   engine = new SyncEngine(config);
 
   // Hook: inject cross-session context before prompt assembly
-  if (injectionEnabled) {
+  if (injectionEnabled && api.hooks) {
     api.hooks.on("before_prompt_build", (event: unknown) => {
       const { sessionKey } = event as BeforePromptBuildEvent;
       const block = engine!.getInjectionBlock(sessionKey, maxInjectedTokens);
@@ -100,7 +100,7 @@ export function register(api: PluginAPI): void {
   }
 
   // Hook: extract facts after each turn
-  if (extractionEnabled) {
+  if (extractionEnabled && api.hooks) {
     api.hooks.on("message:preprocessed", (event: unknown) => {
       const { userMessage, assistantMessage, sessionKey, channel } =
         event as MessagePreprocessedEvent;
@@ -111,7 +111,7 @@ export function register(api: PluginAPI): void {
   }
 
   // Service: periodic cleanup of old facts
-  api.services.register("cross-session-sync-cleanup", {
+  api.services?.register("cross-session-sync-cleanup", {
     interval: 6 * 60 * 60 * 1000, // every 6 hours
     fn: () => engine!.cleanup(),
   });
