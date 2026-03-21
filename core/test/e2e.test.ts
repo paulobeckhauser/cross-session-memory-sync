@@ -172,7 +172,93 @@ describe("E2E: Cross-Session Sync", () => {
     expect(block).toContain("### Background");
   });
 
-  it("Test 5: graceful degradation on failure", async () => {
+  it("Test 5: real-world conflict resolution — dentist appointment rescheduled", async () => {
+    // Simulate a realistic classifier that returns facts as an LLM would
+    const realisticDbPath = path.join(os.tmpdir(), `e2e-realistic-${randomUUID()}.sqlite`);
+    const realisticClassifier: ClassifierFn = async (userMessage: string) => {
+      if (userMessage.includes("dentist") && userMessage.includes("3pm")) {
+        return [{ fact: "User has a dentist appointment on Friday at 3pm", category: "schedule", confidence: 0.95 }];
+      }
+      if (userMessage.includes("dentist") && (userMessage.includes("4pm") || userMessage.includes("moved"))) {
+        return [{ fact: "User's dentist appointment was moved to Friday at 4pm", category: "schedule", confidence: 0.95 }];
+      }
+      if (userMessage.includes("dog") && userMessage.includes("Bidu")) {
+        return [{ fact: "The user's dog's name is Bidu", category: "fact", confidence: 1.0 }];
+      }
+      if (userMessage.includes("color") && userMessage.includes("red")) {
+        return [{ fact: "User's favorite color is red", category: "preference", confidence: 0.9 }];
+      }
+      return null;
+    };
+
+    const realisticEngine = new SyncEngine({
+      dbPath: realisticDbPath,
+      classifierFn: realisticClassifier,
+      compressorFn: mockCompressor,
+      relevanceWindowHours: 24,
+      maxInjectedTokens: 500,
+      confidenceThreshold: 0.6,
+      noiseFilterPatterns: ["ok", "thanks", "lol"],
+      compressionThresholds: { 0: 20, 1: 10, 2: 5 },
+      maxDepth: 4,
+    });
+
+    try {
+      // Telegram: "I have a dentist appointment on Friday at 3pm"
+      await realisticEngine.onTurnComplete({
+        userMessage: "I have a dentist appointment on Friday at 3pm",
+        assistantMessage: "Noted: dentist on Friday at 3pm.",
+        sessionKey: "telegram-user1",
+        channel: "telegram",
+      });
+
+      // Verify it's available on Discord
+      let block = realisticEngine.getInjectionBlock("discord-user1");
+      expect(block).toContain("3pm");
+      expect(block).toContain("dentist");
+
+      // Discord: "My dentist appointment was moved to Friday at 4pm"
+      await realisticEngine.onTurnComplete({
+        userMessage: "My dentist's appointment was moved to Friday at 4pm",
+        assistantMessage: "Got it — moved to 4pm.",
+        sessionKey: "discord-user1",
+        channel: "discord",
+      });
+
+      // Now check from a third session — should see 4pm, NOT 3pm
+      block = realisticEngine.getInjectionBlock("telegram-user2");
+      expect(block).toContain("4pm");
+      expect(block).not.toContain("3pm");
+
+      // Also verify dog fact and color are independent (not superseded)
+      await realisticEngine.onTurnComplete({
+        userMessage: "My dog's name is Bidu",
+        assistantMessage: "Cute name!",
+        sessionKey: "telegram-user1",
+        channel: "telegram",
+      });
+
+      await realisticEngine.onTurnComplete({
+        userMessage: "My favorite color is red",
+        assistantMessage: "Red it is.",
+        sessionKey: "discord-user1",
+        channel: "discord",
+      });
+
+      block = realisticEngine.getInjectionBlock("new-session");
+      expect(block).toContain("Bidu");
+      expect(block).toContain("red");
+      expect(block).toContain("4pm");
+      expect(block).not.toContain("3pm");
+    } finally {
+      realisticEngine.close();
+      try { fs.unlinkSync(realisticDbPath); } catch {}
+      try { fs.unlinkSync(realisticDbPath + "-wal"); } catch {}
+      try { fs.unlinkSync(realisticDbPath + "-shm"); } catch {}
+    }
+  });
+
+  it("Test 6: graceful degradation on failure", async () => {
     // Even with a working engine, injection should never throw
     const block = engine.getInjectionBlock("nonexistent-session");
     expect(typeof block).toBe("string");

@@ -44,8 +44,9 @@ export class Extractor {
       // Step 3: conflict detection — check for existing facts in same category
       const existing = this.store.getActiveFactsByCategory(nugget.category);
       for (const old of existing) {
-        // Simple overlap check: if content is similar enough, supersede
-        if (contentOverlaps(old.content, nugget.fact)) {
+        // Overlap check: if content is similar enough, supersede
+        // sameCategory=true since we already filtered by category
+        if (contentOverlaps(old.content, nugget.fact, true)) {
           this.store.supersede(old.id, "pending");
         }
       }
@@ -64,7 +65,7 @@ export class Extractor {
 
       // Update supersede references with actual ID
       for (const old of existing) {
-        if (contentOverlaps(old.content, nugget.fact)) {
+        if (contentOverlaps(old.content, nugget.fact, true)) {
           this.store.supersede(old.id, id);
         }
       }
@@ -76,7 +77,7 @@ export class Extractor {
   }
 }
 
-function contentOverlaps(existing: string, incoming: string): boolean {
+function contentOverlaps(existing: string, incoming: string, sameCategory = false): boolean {
   const normalize = (s: string) => s.toLowerCase().replace(/[^a-z0-9\s]/g, "");
   const stopWords = new Set([
     "a", "an", "the", "is", "are", "was", "were", "be", "been",
@@ -103,6 +104,35 @@ function contentOverlaps(existing: string, incoming: string): boolean {
     if (existingSet.has(word)) overlap++;
   }
 
-  // Require >60% of content words to match for a conflict
-  return overlap / incomingWords.length > 0.6;
+  const overlapRatio = overlap / incomingWords.length;
+
+  // When facts share the same category, use a lower threshold since
+  // they are more likely to be about the same topic even with different phrasing.
+  if (sameCategory) {
+    // Direct word overlap with lower threshold for same-category facts
+    if (overlapRatio > 0.3) return true;
+
+    // Entity-level matching: extract key nouns/entities (words >= 4 chars,
+    // which filters out short common words the stop list may have missed)
+    // and check if they share enough entities to indicate the same subject.
+    const entityMinLen = 4;
+    const existingEntities = new Set(existingWords.filter((w) => w.length >= entityMinLen));
+    const incomingEntities = incomingWords.filter((w) => w.length >= entityMinLen);
+
+    if (existingEntities.size > 0 && incomingEntities.length > 0) {
+      let entityOverlap = 0;
+      for (const entity of incomingEntities) {
+        if (existingEntities.has(entity)) entityOverlap++;
+      }
+      // If at least 2 shared entities (or all entities if fewer), treat as conflict
+      if (entityOverlap >= 2 || (entityOverlap >= 1 && incomingEntities.length <= 2)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  // Cross-category: require >60% of content words to match for a conflict
+  return overlapRatio > 0.6;
 }

@@ -71,6 +71,11 @@ interface OpenClawPluginApi {
 let engine: SyncEngine | null = null;
 let engineConfig: DAGSyncConfig | null = null;
 
+// Deduplication guard: track last processed message to avoid duplicate
+// extraction when OpenClaw fires message:preprocessed multiple times
+// during registry passes.
+let lastProcessedMessageKey: string | null = null;
+
 function getEngine(): SyncEngine {
   if (!engine && engineConfig) {
     const dbDir = path.dirname(engineConfig.dbPath);
@@ -246,60 +251,77 @@ export function register(api: OpenClawPluginApi): void {
     return;
   }
 
-  // Hook: inject cross-session context before agent bootstrap
-  if (injectionEnabled) {
-    api.registerHook("agent:bootstrap", (event: InternalHookEvent) => {
-      const context = event.context || {};
-      const sessionKey = (context.sessionKey as string) || "";
-      const bootstrapFiles = context.bootstrapFiles as Array<{ name: string; path: string; content?: string; missing: boolean }> | undefined;
-
+  // Hook: inject cross-session context before every LLM call via before_prompt_build.
+  // This fires on every turn (not just session start), so updates from other channels
+  // are immediately visible even within an existing session.
+  if (injectionEnabled && (api as any).on) {
+    (api as any).on("before_prompt_build", (
+      _event: { prompt: string; messages: unknown[] },
+      ctx: { sessionKey?: string; channelId?: string },
+    ) => {
+      const sessionKey = ctx?.sessionKey || "";
       if (!sessionKey) return;
 
       try {
         const block = getEngine().getInjectionBlock(sessionKey, maxInjectedTokens);
-        if (block && bootstrapFiles) {
-          // Write context to a temp file — OpenClaw requires a valid path
-          const tmpDir = path.join(os.tmpdir(), "cross-session-sync");
-          if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
-          const tmpFile = path.join(tmpDir, `inject-${Date.now()}.md`);
-          const content = `# Cross-Session Context\n\n${block}`;
-          fs.writeFileSync(tmpFile, content, "utf-8");
-
-          bootstrapFiles.push({
-            name: "CROSS_SESSION_CONTEXT.md" as any,
-            path: tmpFile,
-            content,
-            missing: false,
-          });
-          log.info(`[cross-session-sync] injected ${block.length} chars of context for session: ${sessionKey}`);
+        if (block) {
+          log.info(`[cross-session-sync] injecting ${block.length} chars via before_prompt_build for session: ${sessionKey}`);
+          return { prependContext: `# Cross-Session Context\n\n${block}\n\n` };
         }
       } catch (err) {
         log.error(`[cross-session-sync] injection error: ${err}`);
       }
-    }, { name: "cross-session-sync-inject", description: "Inject cross-session context into bootstrap" });
+      return undefined;
+    });
   }
 
-  // Hook: extract facts after each preprocessed message
-  if (extractionEnabled) {
-    api.registerHook("message:preprocessed", (event: InternalHookEvent) => {
-      const context = event.context || {};
-      const userMessage = (context.bodyForAgent as string) || (context.body as string) || "";
-      const channelId = (context.channelId as string) || "";
-      const sessionKey = (context.sessionKey as string) || "";
+  // Hook: extract facts after each LLM turn using llm_input (user message) + llm_output (assistant response).
+  // This ensures the classifier sees both sides of the conversation for better extraction quality.
+  if (extractionEnabled && (api as any).on) {
+    // Capture user prompt per session from llm_input
+    const pendingUserPrompts = new Map<string, string>();
+
+    (api as any).on("llm_input", (
+      event: { prompt: string; sessionId: string },
+      ctx: { sessionKey?: string; channelId?: string },
+    ) => {
+      const sessionKey = ctx?.sessionKey || "";
+      if (sessionKey && event.prompt) {
+        pendingUserPrompts.set(sessionKey, event.prompt);
+      }
+    });
+
+    // Extract facts on llm_output when we have both user + assistant messages
+    (api as any).on("llm_output", (
+      event: { assistantTexts: string[]; sessionId: string },
+      ctx: { sessionKey?: string; channelId?: string },
+    ) => {
+      const sessionKey = ctx?.sessionKey || "";
+      const channelId = ctx?.channelId || "";
+      const userMessage = pendingUserPrompts.get(sessionKey) || "";
+      const assistantMessage = (event.assistantTexts || []).join("\n");
+
+      // Clean up pending prompt
+      pendingUserPrompts.delete(sessionKey);
 
       if (!userMessage) return;
 
-      log.info(`[cross-session-sync] message:preprocessed session=${sessionKey} channel=${channelId} msg="${userMessage.slice(0, 80)}"`);
+      // Deduplication: skip if we already processed this exact message
+      const messageKey = `${sessionKey}:${userMessage}`;
+      if (messageKey === lastProcessedMessageKey) return;
+      lastProcessedMessageKey = messageKey;
+
+      log.info(`[cross-session-sync] llm_output session=${sessionKey} channel=${channelId} user="${userMessage.slice(0, 60)}" assistant="${assistantMessage.slice(0, 60)}"`);
 
       getEngine().onTurnComplete({
         userMessage,
-        assistantMessage: "", // assistant message not available at preprocessing time
+        assistantMessage,
         sessionKey,
         channel: channelId,
       }).catch((err: unknown) => {
         log.error(`[cross-session-sync] extraction error: ${err}`);
       });
-    }, { name: "cross-session-sync-extract", description: "Extract facts from messages for cross-session sync" });
+    });
   }
 
   // Service: periodic cleanup of old facts
