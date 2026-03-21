@@ -44,6 +44,12 @@ interface MessagePreprocessedContext {
 let engine: SyncEngine | null = null;
 
 export function register(api: PluginAPI): void {
+  // During install-time validation, OpenClaw calls register() with a minimal API.
+  // Skip full initialization if essential properties are missing.
+  if (!api.on || !api.config) {
+    return;
+  }
+
   const pluginConfig = api.config;
 
   const classifierModel = (pluginConfig.classifierModel as string) ?? "claude-haiku-4-5-20251001";
