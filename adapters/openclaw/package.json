@@ -4,6 +4,9 @@
   "description": "OpenClaw plugin for cross-session knowledge synchronization",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "openclaw": {
+    "extensions": ["./dist/index.js"]
+  },
   "scripts": {
     "build": "bun build src/index.ts --outdir dist --target bun",
     "test": "bun test"
