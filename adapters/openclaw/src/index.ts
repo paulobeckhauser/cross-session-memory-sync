@@ -91,12 +91,17 @@ export function register(api: PluginAPI): void {
   if (injectionEnabled && api.hooks) {
     api.hooks.on("before_prompt_build", (event: unknown) => {
       const { sessionKey } = event as BeforePromptBuildEvent;
+      console.log(`[cross-session-sync] before_prompt_build for session: ${sessionKey}`);
       const block = engine!.getInjectionBlock(sessionKey, maxInjectedTokens);
       if (block) {
+        console.log(`[cross-session-sync] injecting ${block.length} chars of context`);
         return { prependSystemContext: block };
       }
+      console.log("[cross-session-sync] no context to inject");
       return undefined;
     });
+  } else {
+    console.log(`[cross-session-sync] hooks not registered: injectionEnabled=${injectionEnabled}, api.hooks=${!!api.hooks}`);
   }
 
   // Hook: extract facts after each turn
@@ -104,10 +109,13 @@ export function register(api: PluginAPI): void {
     api.hooks.on("message:preprocessed", (event: unknown) => {
       const { userMessage, assistantMessage, sessionKey, channel } =
         event as MessagePreprocessedEvent;
-      engine!.onTurnComplete({ userMessage, assistantMessage, sessionKey, channel }).catch(() => {
-        // Silent failure — never break the session
+      console.log(`[cross-session-sync] message:preprocessed session=${sessionKey} channel=${channel} msg="${userMessage.slice(0, 80)}"`);
+      engine!.onTurnComplete({ userMessage, assistantMessage, sessionKey, channel }).catch((err) => {
+        console.error(`[cross-session-sync] extraction error:`, err);
       });
     });
+  } else {
+    console.log(`[cross-session-sync] extraction hooks not registered: extractionEnabled=${extractionEnabled}, api.hooks=${!!api.hooks}`);
   }
 
   // Service: periodic cleanup of old facts
