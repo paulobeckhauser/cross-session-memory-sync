@@ -1,6 +1,16 @@
 # Cross-Session Memory Sync
 
-Cross-session knowledge synchronization for AI agent frameworks. Enables selective propagation of meaningful knowledge between independent conversation sessions using a shared Knowledge DAG with LCM-inspired hierarchical compression.
+Cross-session knowledge synchronization for AI agent frameworks. Enables selective propagation of meaningful knowledge between independent conversation sessions using a shared Knowledge DAG with hierarchical compression.
+
+## Deliverables
+
+| Deliverable | File | Description |
+|---|---|---|
+| **Architecture document** | [`ARCHITECTURE.md`](ARCHITECTURE.md) | Approach, diagrams, conflict resolution, cost analysis, design trade-offs |
+| **Discussion answers** | [`DISCUSSION.md`](DISCUSSION.md) | Parts 2.1 (alternatives), 2.2 (OpenClaw analysis), 2.3 (fork maintenance) |
+| **Working solution** | [`core/`](core/) + [`adapters/openclaw/`](adapters/openclaw/) | Framework-agnostic library + OpenClaw plugin |
+| **Tests** | [`core/test/`](core/test/) + [`adapters/openclaw/test/`](adapters/openclaw/test/) | 51 tests — cross-session sync, conflict resolution, noise filtering, compression |
+| **Setup & run guide** | This file | Prerequisites, installation, configuration, smoke test |
 
 ## Architecture
 
