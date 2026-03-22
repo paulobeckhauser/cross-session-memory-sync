@@ -34,74 +34,69 @@ adapters/openclaw/       # @openclaw/cross-session-sync plugin
 
 ## Prerequisites
 
-**Node.js (>= 18)** or **Bun (>= 1.0)** — either works.
+- **OpenClaw** — already installed and running (`openclaw gateway status` should show `running`)
+- **Node.js (>= 18)** or **Bun (>= 1.0)**
+- **C/C++ build tools** — `better-sqlite3` is a native module that compiles from source
 
-### Option A: Node.js (recommended for compatibility)
+### Install build tools (if missing)
 
 ```bash
-# Install Node.js if not already installed
-# https://nodejs.org or via nvm:
-curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.0/install.sh | bash
-nvm install 22
+# Debian/Ubuntu
+sudo apt-get install -y build-essential python3
+
+# macOS (Xcode command line tools)
+xcode-select --install
 ```
 
-### Option B: Bun (faster)
+Without `gcc`/`make`, `npm install` will fail on `better-sqlite3` with a confusing `node-gyp` error.
+
+### Install Node.js (if missing)
 
 ```bash
-sudo apt-get install -y unzip  # required on some Linux distros
+# via nvm (recommended)
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.0/install.sh | bash
+nvm install 22
+
+# or via Bun (faster, but less compatible)
 curl -fsSL https://bun.sh/install | bash
 source ~/.bashrc
 ```
 
-## Setup
+## Quick Start (build + install + run)
 
 ```bash
+# 1. Clone
 git clone git@github.com:paulobeckhauser/cross-session-memory-sync.git
-cd cross-session-memory-sync/core
-```
+cd cross-session-memory-sync
 
-### With Node.js / npm
-
-```bash
-npm install
-npm test
-
-# Build
-npx tsc
-```
-
-### With Bun
-
-```bash
-bun install
-bun test
-
-# Build
-bun run build
-```
-
-### Build OpenClaw adapter
-
-```bash
-cd ../adapters/openclaw
-npm install   # or: bun install
-npm run build # or: bun run build
-```
-
-## Running Tests
-
-```bash
+# 2. Build core library
 cd core
-npm test       # Node.js + vitest
-# or
-bun test       # Bun runtime
+npm install
+npx tsc
+cd ..
+
+# 3. Build OpenClaw adapter
+cd adapters/openclaw
+npm install
+npm run build
+cd ../..
+
+# 4. Install plugin into OpenClaw
+cd adapters/openclaw
+openclaw plugins install .
+cd ../..
+
+# 5. Run tests (optional, but recommended to verify the build)
+cd core && npm test && cd ..
 ```
 
-## OpenClaw Integration
+## OpenClaw Configuration
+
+You need to edit `~/.openclaw/openclaw.json`. The following three changes are required.
 
 ### 1. Enable internal hooks
 
-Add to your OpenClaw config (`~/.openclaw/openclaw.json`):
+Find (or add) the `hooks` key at the top level:
 
 ```json
 {
@@ -113,11 +108,33 @@ Add to your OpenClaw config (`~/.openclaw/openclaw.json`):
 }
 ```
 
-This is required for plugin hooks to dispatch events.
+**This is not enabled by default.** Without it, the plugin loads but hooks never fire — facts won't be extracted or injected (silent failure, no errors in logs).
 
-### 2. Set up LLM provider
+### 2. Enable the plugin
 
-The classifier supports multiple LLM providers. By default it uses OpenAI (`gpt-4o-mini`), but you can switch to any provider:
+Add `cross-session-sync` to the `plugins.entries` object:
+
+```json
+{
+  "plugins": {
+    "entries": {
+      "cross-session-sync": {
+        "enabled": true,
+        "config": {
+          "classifierProvider": "openai",
+          "classifierModel": "gpt-4o-mini"
+        }
+      }
+    }
+  }
+}
+```
+
+**Do NOT add `cross-session-sync` to `plugins.allow`.** The `allow` array only accepts stock plugin IDs. Adding a custom plugin ID there will crash the gateway on restart with `plugins.allow: plugin not found: cross-session-sync`.
+
+### 3. Set up LLM provider
+
+The classifier needs an LLM to decide which conversation facts are worth persisting. Pick one:
 
 | Provider | Model (default) | Env var | Cost |
 |---|---|---|---|
@@ -129,69 +146,55 @@ The classifier supports multiple LLM providers. By default it uses OpenAI (`gpt-
 | `groq` | `llama-3.1-8b-instant` | `GROQ_API_KEY` | Free tier available |
 | `ollama` | `phi3:mini` | *(none needed)* | **Free (local)** |
 
-Set the API key for your chosen provider as an environment variable, or use OpenClaw's built-in auth:
+Set the key as an env var, or use OpenClaw auth profiles:
 
 ```bash
-openclaw auth add openai   # or set OPENAI_API_KEY env var
+export OPENAI_API_KEY="sk-..."
+# or:
+openclaw auth add openai
 ```
 
-### 3. Install the plugin
+If the gateway runs as a systemd service, env vars in your shell won't reach it. Either use `openclaw auth add` (persisted to config) or add the env var to the service file.
 
-```bash
-openclaw plugins install ./adapters/openclaw
-```
-
-### 4. Configure
-
-Add to your OpenClaw config (`~/.openclaw/openclaw.json`):
-
-```json
-{
-  "plugins": {
-    "entries": {
-      "cross-session-sync": {
-        "enabled": true,
-        "config": {
-          "classifierProvider": "openai",
-          "classifierModel": "gpt-4o-mini",
-          "extractionEnabled": true,
-          "injectionEnabled": true,
-          "compressionThreshold": 20,
-          "maxInjectedTokens": 500,
-          "relevanceWindowHours": 24
-        }
-      }
-    }
-  }
-}
-```
-
-### 5. Restart gateway
+### 4. Restart gateway and verify
 
 ```bash
 openclaw gateway restart
 openclaw plugins list | grep cross-session
 ```
 
-The plugin should show status **loaded**.
+The plugin should show status **loaded**. If it doesn't appear at all, check the logs:
 
-### 6. Smoke test
+```bash
+cat /tmp/openclaw/openclaw-$(date +%Y-%m-%d).log | grep cross-session | tail -20
+```
 
-Send a message on one channel (e.g., Telegram):
+## Smoke Test
 
-> "My dog's name is Bidu"
+**Channel A** (e.g., Telegram) — send:
 
-Then on another channel (e.g., Discord), send `/new` to reset the session and ask:
+> My dog's name is Bidu
 
-> "What's my dog's name?"
+**Channel B** (e.g., Discord) — send `/new` to reset the session, then ask:
 
-The assistant should surface "Bidu" from cross-session context.
+> What's my dog's name?
 
-You can verify facts are being stored:
+The assistant should answer "Bidu" from cross-session context.
+
+Verify facts in the database:
 
 ```bash
 sqlite3 ~/.openclaw/memory/cross-session-sync-knowledge-dag.sqlite \
   "SELECT content, category, source_channel, created_at FROM dag_nodes ORDER BY created_at DESC LIMIT 10;"
+```
+
+## Running Tests
+
+```bash
+cd core
+npm test       # Node.js + vitest
+# or
+bun test       # Bun runtime
 ```
 
 ## Configuration Options
@@ -218,17 +221,37 @@ sqlite3 ~/.openclaw/memory/cross-session-sync-knowledge-dag.sqlite \
 
 Coexists with Lossless Claw (LCM) — uses plugin hooks, not the exclusive ContextEngine slot.
 
+## Important Notes
+
+- **Don't move or delete the cloned repo after install.** OpenClaw resolves the plugin from its original `sourcePath`, not a copy. If you move the repo, the plugin stops loading.
+- **The `plugins.allow` array is only for stock plugins.** Adding `cross-session-sync` there crashes the gateway. Only add it to `plugins.entries`.
+- **`hooks.internal.enabled` defaults to `false`.** This is the most common silent failure — the plugin loads, shows no errors, but does nothing.
+
 ## Troubleshooting
 
-**Plugin shows "error" status:**
-- Ensure `hooks.internal.enabled` is `true` in your OpenClaw config
+**Gateway crashes on restart with `plugins.allow: plugin not found`:**
+- You added `cross-session-sync` to the `plugins.allow` array. Remove it — only stock plugin IDs go there. The plugin only needs an entry in `plugins.entries`.
+
+**Plugin not in `openclaw plugins list`:**
+- Run `openclaw plugins install .` again from `adapters/openclaw/`
+- Check that `plugins.installs.cross-session-sync` exists in `~/.openclaw/openclaw.json`
+- Check logs: `cat /tmp/openclaw/openclaw-$(date +%Y-%m-%d).log | grep cross-session | tail -20`
+
+**Plugin shows "loaded" but nothing happens:**
+- Ensure `hooks.internal.enabled` is `true` — without this, hooks never fire
+- Check that your LLM API key is set and reachable from the gateway process
+
+**`npm install` fails on `better-sqlite3`:**
+- Install build tools: `sudo apt-get install -y build-essential python3`
+- On macOS: `xcode-select --install`
 
 **No facts extracted:**
-- Check that the API key for your chosen provider is set (env var or OpenClaw auth profiles)
-- Check gateway logs: `journalctl --user -u openclaw-gateway -f | grep cross-session`
+- Check that the API key for your chosen provider is set (env var or `openclaw auth add`)
+- If the gateway runs as a systemd service, shell env vars don't reach it — use `openclaw auth add` instead
+- Check gateway logs: `cat /tmp/openclaw/openclaw-$(date +%Y-%m-%d).log | grep cross-session`
 
 **Facts extracted but not injected:**
-- Send `/new` on the target channel to start a fresh session (bootstrap hook fires on new sessions)
+- Send `/new` on the target channel to start a fresh session (the `before_prompt_build` hook fires on new sessions)
 - Verify facts exist: `sqlite3 ~/.openclaw/memory/cross-session-sync-knowledge-dag.sqlite "SELECT * FROM dag_nodes;"`
 
 **Clear all stored facts:**
