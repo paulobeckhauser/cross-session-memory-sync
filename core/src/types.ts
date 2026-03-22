@@ -10,6 +10,7 @@ export interface DAGNode {
   createdAt: string; // ISO 8601
   supersededBy?: string; // → newer conflicting fact
   isCompressed: boolean; // true = folded into a parent summary
+  archivedAt?: string; // ISO 8601 — soft-delete timestamp, never hard-deleted
 }
 
 export type NuggetCategory =

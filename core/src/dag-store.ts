@@ -23,7 +23,8 @@ export class DAGStore {
         parent_id       TEXT,
         created_at      TEXT NOT NULL,
         superseded_by   TEXT,
-        is_compressed   INTEGER NOT NULL DEFAULT 0
+        is_compressed   INTEGER NOT NULL DEFAULT 0,
+        archived_at     TEXT
       );
 
       CREATE TABLE IF NOT EXISTS dag_lineage (
@@ -37,7 +38,15 @@ export class DAGStore {
       CREATE INDEX IF NOT EXISTS idx_uncompressed ON dag_nodes(is_compressed) WHERE is_compressed = 0;
       CREATE INDEX IF NOT EXISTS idx_parent ON dag_nodes(parent_id);
       CREATE INDEX IF NOT EXISTS idx_created ON dag_nodes(created_at);
+      CREATE INDEX IF NOT EXISTS idx_archived ON dag_nodes(archived_at) WHERE archived_at IS NULL;
     `);
+
+    // Migration: add archived_at column to existing databases
+    try {
+      this.db.exec(`ALTER TABLE dag_nodes ADD COLUMN archived_at TEXT`);
+    } catch {
+      // Column already exists — ignore
+    }
   }
 
   insertFact(fact: Omit<DAGNode, "depth" | "isCompressed" | "parentId" | "supersededBy">): void {
@@ -96,7 +105,7 @@ export class DAGStore {
     excludeSession?: string,
     maxDepth?: number
   ): DAGNode[] {
-    let sql = `SELECT * FROM dag_nodes WHERE superseded_by IS NULL AND is_compressed = 0`;
+    let sql = `SELECT * FROM dag_nodes WHERE superseded_by IS NULL AND is_compressed = 0 AND archived_at IS NULL`;
     const params: (string | number)[] = [];
 
     if (excludeSession) {
@@ -113,7 +122,7 @@ export class DAGStore {
   }
 
   getUncompressedNodes(depth: number, category?: string): DAGNode[] {
-    let sql = `SELECT * FROM dag_nodes WHERE depth = ? AND is_compressed = 0 AND superseded_by IS NULL`;
+    let sql = `SELECT * FROM dag_nodes WHERE depth = ? AND is_compressed = 0 AND superseded_by IS NULL AND archived_at IS NULL`;
     const params: (string | number)[] = [depth];
 
     if (category) {
@@ -129,7 +138,7 @@ export class DAGStore {
     const rows = this.db
       .prepare(
         `SELECT DISTINCT category FROM dag_nodes
-         WHERE depth = ? AND is_compressed = 0 AND superseded_by IS NULL AND category IS NOT NULL`
+         WHERE depth = ? AND is_compressed = 0 AND superseded_by IS NULL AND category IS NOT NULL AND archived_at IS NULL`
       )
       .all(depth) as { category: string }[];
     return rows.map((r) => r.category);
@@ -162,7 +171,7 @@ export class DAGStore {
     return this.db
       .prepare(
         `SELECT * FROM dag_nodes
-         WHERE category = ? AND depth = 0 AND superseded_by IS NULL AND is_compressed = 0
+         WHERE category = ? AND depth = 0 AND superseded_by IS NULL AND is_compressed = 0 AND archived_at IS NULL
          ORDER BY created_at DESC`
       )
       .all(category)
@@ -173,17 +182,16 @@ export class DAGStore {
     const cutoff = new Date(
       Date.now() - olderThanHours * 60 * 60 * 1000
     ).toISOString();
+    const now = new Date().toISOString();
 
+    // Soft-delete: archive instead of removing
     const result = this.db
       .prepare(
-        `DELETE FROM dag_nodes
-         WHERE created_at < ? AND (is_compressed = 1 OR superseded_by IS NOT NULL)`
+        `UPDATE dag_nodes SET archived_at = ?
+         WHERE created_at < ? AND archived_at IS NULL
+         AND (is_compressed = 1 OR superseded_by IS NOT NULL)`
       )
-      .run(cutoff);
-
-    this.db.exec(
-      `DELETE FROM dag_lineage WHERE source_id NOT IN (SELECT id FROM dag_nodes)`
-    );
+      .run(now, cutoff);
 
     return result.changes;
   }
@@ -214,5 +222,6 @@ function rowToNode(row: unknown): DAGNode {
     createdAt: r.created_at as string,
     supersededBy: (r.superseded_by as string) ?? undefined,
     isCompressed: (r.is_compressed as number) === 1,
+    archivedAt: (r.archived_at as string) ?? undefined,
   };
 }

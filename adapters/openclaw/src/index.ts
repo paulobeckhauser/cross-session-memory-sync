@@ -66,6 +66,179 @@ interface OpenClawPluginApi {
   [key: string]: unknown;
 }
 
+// ── LLM Provider abstraction ─────────────────────────────────────────
+
+interface LLMProviderConfig {
+  provider: string;
+  apiKey: string;
+  baseUrl: string;
+  model: string;
+}
+
+// All supported providers use the OpenAI-compatible chat completions format.
+// This covers: OpenAI, Anthropic (via proxy), Google Gemini (via proxy),
+// DeepSeek, Mistral, Groq, and local Ollama — they all expose the same
+// POST /v1/chat/completions endpoint.
+//
+// Cost guidance: the classifier is a structured JSON extraction task — small,
+// cheap models (< $1/1M input tokens) are ideal. Models above that threshold
+// add cost without meaningful quality improvement.
+const PROVIDER_DEFAULTS: Record<string, { baseUrl: string; model: string; envKey: string; costPer1MInput: number }> = {
+  openai: {
+    baseUrl: "https://api.openai.com/v1",
+    model: "gpt-4o-mini",
+    envKey: "OPENAI_API_KEY",
+    costPer1MInput: 0.15,
+  },
+  anthropic: {
+    baseUrl: "https://api.anthropic.com/v1",
+    model: "claude-haiku-4-5-20251001",
+    envKey: "ANTHROPIC_API_KEY",
+    costPer1MInput: 0.80,
+  },
+  gemini: {
+    baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
+    model: "gemini-2.0-flash-lite",
+    envKey: "GEMINI_API_KEY",
+    costPer1MInput: 0.075,
+  },
+  deepseek: {
+    baseUrl: "https://api.deepseek.com/v1",
+    model: "deepseek-chat",
+    envKey: "DEEPSEEK_API_KEY",
+    costPer1MInput: 0.14,
+  },
+  mistral: {
+    baseUrl: "https://api.mistral.ai/v1",
+    model: "mistral-small-latest",
+    envKey: "MISTRAL_API_KEY",
+    costPer1MInput: 0.10,
+  },
+  groq: {
+    baseUrl: "https://api.groq.com/openai/v1",
+    model: "llama-3.1-8b-instant",
+    envKey: "GROQ_API_KEY",
+    costPer1MInput: 0.00,  // free tier
+  },
+  ollama: {
+    baseUrl: "http://localhost:11434/v1",
+    model: "phi3:mini",
+    envKey: "",  // no key needed
+    costPer1MInput: 0.00,  // local
+  },
+};
+
+function resolveProvider(
+  pluginConfig: Record<string, unknown>,
+  log: PluginLogger,
+): LLMProviderConfig | null {
+  const providerName = ((pluginConfig.classifierProvider as string) ?? "openai").toLowerCase();
+  const defaults = PROVIDER_DEFAULTS[providerName];
+
+  if (!defaults) {
+    log.warn(`[cross-session-sync] Unknown provider "${providerName}", falling back to openai`);
+    return resolveProvider({ ...pluginConfig, classifierProvider: "openai" }, log);
+  }
+
+  const baseUrl = (pluginConfig.classifierBaseUrl as string) ?? defaults.baseUrl;
+  const model = (pluginConfig.classifierModel as string) ?? defaults.model;
+
+  // Resolve API key: explicit config > env var > OpenClaw auth profiles
+  let apiKey = pluginConfig.classifierApiKey as string | undefined;
+
+  if (!apiKey && defaults.envKey) {
+    apiKey = process.env[defaults.envKey];
+  }
+
+  // Try OpenClaw auth profiles for known providers
+  if (!apiKey && providerName === "openai") {
+    apiKey = resolveOpenClawAuthKey("openai");
+  }
+
+  // Ollama doesn't need a key
+  if (!apiKey && providerName === "ollama") {
+    apiKey = "ollama";  // placeholder, Ollama ignores auth
+  }
+
+  if (!apiKey) {
+    log.warn(`[cross-session-sync] No API key for provider "${providerName}" — classifier/compressor disabled`);
+    return null;
+  }
+
+  // Warn if using a model that costs more than $1/1M input tokens — the
+  // classifier is a structured JSON extraction task where cheap models
+  // (gpt-4o-mini, gemini-flash-lite) perform just as well as expensive ones.
+  const MAX_RECOMMENDED_COST = 1.0;  // $/1M input tokens
+  if (defaults.costPer1MInput > MAX_RECOMMENDED_COST) {
+    log.warn(
+      `[cross-session-sync] Provider "${providerName}" (${model}) costs $${defaults.costPer1MInput}/1M input tokens — ` +
+      `this exceeds the recommended $${MAX_RECOMMENDED_COST}/1M ceiling for classification. ` +
+      `Cheaper models (gpt-4o-mini, gemini-flash-lite, ollama) perform equally well for this task.`
+    );
+  }
+
+  log.info(`[cross-session-sync] Using provider: ${providerName} (model: ${model}, baseUrl: ${baseUrl}, ~$${defaults.costPer1MInput}/1M input tokens)`);
+  return { provider: providerName, apiKey, baseUrl, model };
+}
+
+function resolveOpenClawAuthKey(provider: string): string | undefined {
+  try {
+    const authProfilesPath = path.join(os.homedir(), ".openclaw", "agents", "main", "agent", "auth-profiles.json");
+    if (fs.existsSync(authProfilesPath)) {
+      const authProfiles = JSON.parse(fs.readFileSync(authProfilesPath, "utf-8"));
+      const profiles = authProfiles.profiles || {};
+      const lastGoodId = authProfiles.lastGood?.[provider];
+      const profile = (lastGoodId && profiles[lastGoodId])
+        || profiles[`${provider}:default`]
+        || profiles[`${provider}:manual`];
+      if (profile) {
+        return profile.key || profile.token;
+      }
+    }
+  } catch {
+    // ignore auth profile read errors
+  }
+  return undefined;
+}
+
+// OpenAI-compatible chat completions call — works with all providers
+async function chatCompletion(config: LLMProviderConfig, prompt: string): Promise<string> {
+  const url = `${config.baseUrl}/chat/completions`;
+
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+
+  // Anthropic uses a different auth header
+  if (config.provider === "anthropic") {
+    headers["x-api-key"] = config.apiKey;
+    headers["anthropic-version"] = "2023-06-01";
+  } else {
+    headers["Authorization"] = `Bearer ${config.apiKey}`;
+  }
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      model: config.model,
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0,
+      max_tokens: 512,
+    }),
+  });
+
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`${config.provider} API error ${res.status}: ${body}`);
+  }
+
+  const json = (await res.json()) as {
+    choices: Array<{ message: { content: string } }>;
+  };
+  return json.choices[0].message.content;
+}
+
 // ── Plugin state ────────────────────────────────────────────────────
 
 let engine: SyncEngine | null = null;
@@ -98,10 +271,25 @@ export const description =
 export const configSchema: PluginConfigSchema = {
   type: "object",
   properties: {
+    classifierProvider: {
+      type: "string",
+      default: "openai",
+      description: "LLM provider: openai, anthropic, gemini, deepseek, mistral, groq, ollama",
+    },
     classifierModel: {
       type: "string",
-      default: "gpt-4o-mini",
-      description: "OpenAI model used for fact extraction and classification",
+      default: "",
+      description: "Model name (defaults to provider's recommended cheap model)",
+    },
+    classifierBaseUrl: {
+      type: "string",
+      default: "",
+      description: "Custom API base URL (for self-hosted or proxy setups)",
+    },
+    classifierApiKey: {
+      type: "string",
+      default: "",
+      description: "Explicit API key (overrides env var and auth profiles)",
     },
     extractionEnabled: {
       type: "boolean",
@@ -135,7 +323,6 @@ export function register(api: OpenClawPluginApi): void {
   const pluginConfig = api.pluginConfig || {};
   const log = api.logger;
 
-  const classifierModel = (pluginConfig.classifierModel as string) ?? "gpt-4o-mini";
   const extractionEnabled = (pluginConfig.extractionEnabled as boolean) ?? true;
   const injectionEnabled = (pluginConfig.injectionEnabled as boolean) ?? true;
   const relevanceWindowHours = (pluginConfig.relevanceWindowHours as number) ?? DEFAULT_DAG_CONFIG.relevanceWindowHours;
@@ -146,69 +333,18 @@ export function register(api: OpenClawPluginApi): void {
   const dbDir = path.join(os.homedir(), ".openclaw", "memory");
   const dbPath = path.join(dbDir, `${agentId}-knowledge-dag.sqlite`);
 
-  // Resolve OpenAI API key: env var first, then OpenClaw auth profiles
-  let openaiApiKey = process.env.OPENAI_API_KEY;
-  if (!openaiApiKey) {
-    try {
-      const authProfilesPath = path.join(os.homedir(), ".openclaw", "agents", "main", "agent", "auth-profiles.json");
-      if (fs.existsSync(authProfilesPath)) {
-        const authProfiles = JSON.parse(fs.readFileSync(authProfilesPath, "utf-8"));
-        const profiles = authProfiles.profiles || {};
-        // Try lastGood first, then any openai profile
-        const lastGoodId = authProfiles.lastGood?.openai;
-        const profile = (lastGoodId && profiles[lastGoodId]) || profiles["openai:default"] || profiles["openai:manual"];
-        if (profile) {
-          openaiApiKey = profile.key || profile.token;
-        }
-      }
-    } catch {
-      // ignore auth profile read errors
-    }
-  }
-  if (!openaiApiKey) {
-    log.warn("[cross-session-sync] No OpenAI API key found — classifier/compressor will be disabled");
-  } else {
-    log.info("[cross-session-sync] OpenAI API key resolved");
-  }
+  // Resolve LLM provider
+  const llmConfig = resolveProvider(pluginConfig, log);
 
-  // Helper: call OpenAI chat completions API
-  async function openaiChat(prompt: string): Promise<string> {
-    if (!openaiApiKey) throw new Error("OPENAI_API_KEY not set");
-
-    const res = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${openaiApiKey}`,
-      },
-      body: JSON.stringify({
-        model: classifierModel,
-        messages: [{ role: "user", content: prompt }],
-        temperature: 0,
-        max_tokens: 512,
-      }),
-    });
-
-    if (!res.ok) {
-      const body = await res.text();
-      throw new Error(`OpenAI API error ${res.status}: ${body}`);
-    }
-
-    const json = (await res.json()) as {
-      choices: Array<{ message: { content: string } }>;
-    };
-    return json.choices[0].message.content;
-  }
-
-  // Classifier: extract facts from conversation turns via OpenAI
+  // Classifier: extract facts from conversation turns
   const classifierFn = async (userMessage: string, assistantMessage: string): Promise<ClassifiedNugget[] | null> => {
-    if (!openaiApiKey) return null;
+    if (!llmConfig) return null;
 
     const prompt = CLASSIFIER_PROMPT
       .replace("{userMessage}", userMessage)
       .replace("{assistantMessage}", assistantMessage);
 
-    const response = await openaiChat(prompt);
+    const response = await chatCompletion(llmConfig, prompt);
     const trimmed = response.trim();
 
     if (trimmed === "null" || trimmed === "") return null;
@@ -217,14 +353,14 @@ export function register(api: OpenClawPluginApi): void {
     return parsed;
   };
 
-  // Compressor: summarize facts via OpenAI
+  // Compressor: summarize facts
   const compressorFn = async (facts: string[], depth: number): Promise<string> => {
-    if (!openaiApiKey) return facts.join("; ");
+    if (!llmConfig) return facts.join("; ");
 
     const promptKey = depth === 0 ? "d0_to_d1" : "d1_to_d2";
     const prompt = COMPRESSION_PROMPTS[promptKey] + facts.map((f) => `- ${f}`).join("\n");
 
-    return openaiChat(prompt);
+    return chatCompletion(llmConfig, prompt);
   };
 
   // Store config for lazy initialization
@@ -287,6 +423,8 @@ export function register(api: OpenClawPluginApi): void {
     ) => {
       const sessionKey = ctx?.sessionKey || "";
       if (sessionKey && event.prompt) {
+        // Skip if this is our own injected context block
+        if (event.prompt.startsWith("# Cross-Session Context")) return;
         pendingUserPrompts.set(sessionKey, event.prompt);
       }
     });

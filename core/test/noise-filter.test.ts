@@ -16,10 +16,18 @@ describe("NoiseFilter", () => {
     expect(filter.shouldProcess("   ")).toBe(false);
   });
 
-  it("should reject short messages (< 5 words)", () => {
-    expect(filter.shouldProcess("hi there")).toBe(false);
-    expect(filter.shouldProcess("yes please")).toBe(false);
-    expect(filter.shouldProcess("ok sure")).toBe(false);
+  it("should reject short noise via pattern matching, not word count", () => {
+    // These are caught by pattern matching, not a word count gate
+    expect(filter.shouldProcess("ok")).toBe(false);
+    expect(filter.shouldProcess("yes")).toBe(false);
+    expect(filter.shouldProcess("sure")).toBe(false);
+  });
+
+  it("should accept short but meaningful messages", () => {
+    expect(filter.shouldProcess("allergic penicillin")).toBe(true);
+    expect(filter.shouldProcess("vegan diet")).toBe(true);
+    expect(filter.shouldProcess("doctor appointment at 5pm")).toBe(true);
+    expect(filter.shouldProcess("meeting moved Thursday")).toBe(true);
   });
 
   it("should reject emoji-only messages", () => {

@@ -105,17 +105,24 @@ Add to your OpenClaw config (`~/.openclaw/openclaw.json`):
 
 This is required for plugin hooks to dispatch events.
 
-### 2. Set up OpenAI API key
+### 2. Set up LLM provider
 
-The classifier uses the OpenAI API (default model: `gpt-4o-mini`). The plugin resolves the API key automatically from:
+The classifier supports multiple LLM providers. By default it uses OpenAI (`gpt-4o-mini`), but you can switch to any provider:
 
-1. `OPENAI_API_KEY` environment variable, or
-2. OpenClaw auth profiles (`~/.openclaw/agents/main/agent/auth-profiles.json`)
+| Provider | Model (default) | Env var | Cost |
+|---|---|---|---|
+| `openai` | `gpt-4o-mini` | `OPENAI_API_KEY` | $0.15/1M tokens |
+| `anthropic` | `claude-haiku-4-5-20251001` | `ANTHROPIC_API_KEY` | $0.80/1M tokens |
+| `gemini` | `gemini-2.0-flash-lite` | `GEMINI_API_KEY` | $0.075/1M tokens |
+| `deepseek` | `deepseek-chat` | `DEEPSEEK_API_KEY` | $0.14/1M tokens |
+| `mistral` | `mistral-small-latest` | `MISTRAL_API_KEY` | $0.10/1M tokens |
+| `groq` | `llama-3.1-8b-instant` | `GROQ_API_KEY` | Free tier available |
+| `ollama` | `phi3:mini` | *(none needed)* | **Free (local)** |
 
-If using OpenClaw's built-in auth, set it up via:
+Set the API key for your chosen provider as an environment variable, or use OpenClaw's built-in auth:
 
 ```bash
-openclaw auth add openai
+openclaw auth add openai   # or set OPENAI_API_KEY env var
 ```
 
 ### 3. Install the plugin
@@ -135,6 +142,7 @@ Add to your OpenClaw config (`~/.openclaw/openclaw.json`):
       "cross-session-sync": {
         "enabled": true,
         "config": {
+          "classifierProvider": "openai",
           "classifierModel": "gpt-4o-mini",
           "extractionEnabled": true,
           "injectionEnabled": true,
@@ -180,7 +188,10 @@ sqlite3 ~/.openclaw/memory/cross-session-sync-knowledge-dag.sqlite \
 
 | Option | Default | Description |
 |---|---|---|
-| `classifierModel` | `gpt-4o-mini` | OpenAI model for fact extraction |
+| `classifierProvider` | `openai` | LLM provider: `openai`, `anthropic`, `gemini`, `deepseek`, `mistral`, `groq`, `ollama` |
+| `classifierModel` | *(per provider)* | Model name override (each provider has a sensible default) |
+| `classifierBaseUrl` | *(per provider)* | Custom API base URL (for self-hosted or proxy setups) |
+| `classifierApiKey` | *(auto-resolved)* | Explicit API key (overrides env var and auth profiles) |
 | `extractionEnabled` | `true` | Enable/disable fact extraction |
 | `injectionEnabled` | `true` | Enable/disable context injection |
 | `compressionThreshold` | `20` | d0 facts before compression triggers |
@@ -189,7 +200,7 @@ sqlite3 ~/.openclaw/memory/cross-session-sync-knowledge-dag.sqlite \
 
 ## How It Works
 
-1. **Extract** — On each incoming message (`message:preprocessed` hook), a noise filter + LLM classifier (gpt-4o-mini via OpenAI API) decides if the conversation contains shareable knowledge
+1. **Extract** — On each incoming message (`llm_input` + `llm_output` hooks), a noise filter + LLM classifier (configurable provider — OpenAI, Anthropic, Gemini, DeepSeek, Mistral, Groq, or local Ollama) decides if the conversation contains shareable knowledge
 2. **Store** — Facts enter the Knowledge DAG as d0 leaf nodes in SQLite
 3. **Compress** — When d0 nodes exceed a threshold, they compress into d1 summaries; d1 into d2, recursively
 4. **Assemble** — Before each agent turn (`agent:bootstrap` hook), recent d0 facts + compressed d1/d2 summaries are assembled into a token-bounded context block
@@ -203,7 +214,7 @@ Coexists with Lossless Claw (LCM) — uses plugin hooks, not the exclusive Conte
 - Ensure `hooks.internal.enabled` is `true` in your OpenClaw config
 
 **No facts extracted:**
-- Check that `OPENAI_API_KEY` is set or OpenClaw auth profiles contain an OpenAI key
+- Check that the API key for your chosen provider is set (env var or OpenClaw auth profiles)
 - Check gateway logs: `journalctl --user -u openclaw-gateway -f | grep cross-session`
 
 **Facts extracted but not injected:**

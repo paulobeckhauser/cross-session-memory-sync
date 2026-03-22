@@ -12,10 +12,6 @@ export class NoiseFilter {
 
     if (trimmed.length === 0) return false;
 
-    // Too short to contain meaningful knowledge
-    const wordCount = trimmed.split(/\s+/).length;
-    if (wordCount < 5) return false;
-
     // Emoji-only
     if (EMOJI_ONLY_RE.test(trimmed)) return false;
 

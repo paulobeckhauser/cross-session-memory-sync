@@ -41,14 +41,28 @@ export class Extractor {
     for (const nugget of nuggets) {
       if (nugget.confidence < this.confidenceThreshold) continue;
 
-      // Step 3: conflict detection — check for existing facts in same category
-      const existing = this.store.getActiveFactsByCategory(nugget.category);
-      for (const old of existing) {
-        // Overlap check: if content is similar enough, supersede
-        // sameCategory=true since we already filtered by category
+      // Step 3: conflict detection — check same category first, then cross-category
+      const sameCategory = this.store.getActiveFactsByCategory(nugget.category);
+      const allActive = this.store.getActiveNodes();
+      const crossCategory = allActive.filter(
+        (n) => n.depth === 0 && n.category !== nugget.category
+      );
+
+      const toSupersede: string[] = [];
+
+      for (const old of sameCategory) {
         if (contentOverlaps(old.content, nugget.fact, true)) {
-          this.store.supersede(old.id, "pending");
+          toSupersede.push(old.id);
         }
+      }
+      for (const old of crossCategory) {
+        if (contentOverlaps(old.content, nugget.fact, false)) {
+          toSupersede.push(old.id);
+        }
+      }
+
+      for (const oldId of toSupersede) {
+        this.store.supersede(oldId, "pending");
       }
 
       // Step 4: insert as d0 leaf node
@@ -64,10 +78,8 @@ export class Extractor {
       });
 
       // Update supersede references with actual ID
-      for (const old of existing) {
-        if (contentOverlaps(old.content, nugget.fact, true)) {
-          this.store.supersede(old.id, id);
-        }
+      for (const oldId of toSupersede) {
+        this.store.supersede(oldId, id);
       }
 
       inserted++;
