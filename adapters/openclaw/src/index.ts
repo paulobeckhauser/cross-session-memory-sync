@@ -248,6 +248,7 @@ let engineConfig: DAGSyncConfig | null = null;
 // extraction when OpenClaw fires message:preprocessed multiple times
 // during registry passes.
 let lastProcessedMessageKey: string | null = null;
+let hooksRegistered = false;
 
 function getEngine(): SyncEngine {
   if (!engine && engineConfig) {
@@ -387,6 +388,8 @@ export function register(api: OpenClawPluginApi): void {
     return;
   }
 
+  log.info("[cross-session-sync] registering hooks (llm_input, llm_output, before_prompt_build)");
+
   // Hook: inject cross-session context before every LLM call via before_prompt_build.
   // This fires on every turn (not just session start), so updates from other channels
   // are immediately visible even within an existing session.
@@ -411,45 +414,62 @@ export function register(api: OpenClawPluginApi): void {
     });
   }
 
-  // Hook: extract facts after each LLM turn using llm_input (user message) + llm_output (assistant response).
-  // This ensures the classifier sees both sides of the conversation for better extraction quality.
+  // Hook: extract facts using llm_input (user prompt) + llm_output (assistant response).
+  // Also listen to message_received as a fallback for capturing the original user text.
   if (extractionEnabled && (api as any).on) {
-    // Capture user prompt per session from llm_input
     const pendingUserPrompts = new Map<string, string>();
 
+    // llm_input: capture user prompt per session
     (api as any).on("llm_input", (
-      event: { prompt: string; sessionId: string },
-      ctx: { sessionKey?: string; channelId?: string },
+      event: { prompt: string; sessionId: string; systemPrompt?: string; historyMessages?: unknown[] },
+      ctx: { sessionKey?: string; channelId?: string; messageProvider?: string },
     ) => {
       const sessionKey = ctx?.sessionKey || "";
-      if (sessionKey && event.prompt) {
-        // Skip if this is our own injected context block
-        if (event.prompt.startsWith("# Cross-Session Context")) return;
-        pendingUserPrompts.set(sessionKey, event.prompt);
+      const prompt = event.prompt || "";
+
+      // Skip internal sessions (slug generators, etc.)
+      if (sessionKey.startsWith("temp:")) return;
+
+      // Strip our injected context prefix to get the real user prompt
+      let userPrompt = prompt;
+      if (userPrompt.startsWith("# Cross-Session Context")) {
+        // Find the end of our injected block (double newline after block)
+        const endIdx = userPrompt.indexOf("\n\n", userPrompt.indexOf("\n\n") + 2);
+        if (endIdx > 0) {
+          userPrompt = userPrompt.slice(endIdx).trim();
+        }
+      }
+
+      if (sessionKey && userPrompt) {
+        log.info(`[cross-session-sync] llm_input session=${sessionKey} channel=${ctx?.channelId || ctx?.messageProvider || "?"} prompt="${userPrompt.slice(0, 80)}"`);
+        pendingUserPrompts.set(sessionKey, userPrompt);
       }
     });
 
-    // Extract facts on llm_output when we have both user + assistant messages
+    // llm_output: extract facts when we have both user + assistant messages
     (api as any).on("llm_output", (
       event: { assistantTexts: string[]; sessionId: string },
-      ctx: { sessionKey?: string; channelId?: string },
+      ctx: { sessionKey?: string; channelId?: string; messageProvider?: string },
     ) => {
       const sessionKey = ctx?.sessionKey || "";
-      const channelId = ctx?.channelId || "";
+      const channelId = ctx?.channelId || ctx?.messageProvider || "";
+
+      // Skip internal sessions
+      if (sessionKey.startsWith("temp:")) return;
+
       const userMessage = pendingUserPrompts.get(sessionKey) || "";
       const assistantMessage = (event.assistantTexts || []).join("\n");
 
-      // Clean up pending prompt
       pendingUserPrompts.delete(sessionKey);
 
       if (!userMessage) return;
 
-      // Deduplication: skip if we already processed this exact message
+      // Deduplication
       const messageKey = `${sessionKey}:${userMessage}`;
       if (messageKey === lastProcessedMessageKey) return;
       lastProcessedMessageKey = messageKey;
 
-      log.info(`[cross-session-sync] llm_output session=${sessionKey} channel=${channelId} user="${userMessage.slice(0, 60)}" assistant="${assistantMessage.slice(0, 60)}"`);
+      log.info(`[cross-session-sync] extracting session=${sessionKey} channel=${channelId} user="${userMessage.slice(0, 60)}" assistant="${assistantMessage.slice(0, 60)}"`);
 
       getEngine().onTurnComplete({
         userMessage,
@@ -489,4 +509,5 @@ export function deactivate(): void {
     engine = null;
   }
   engineConfig = null;
+  hooksRegistered = false;
 }
