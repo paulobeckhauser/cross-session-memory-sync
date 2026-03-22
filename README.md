@@ -9,7 +9,7 @@ Cross-session knowledge synchronization for AI agent frameworks. Enables selecti
 | **Architecture document** | [`ARCHITECTURE.md`](ARCHITECTURE.md) | Approach, diagrams, conflict resolution, cost analysis, design trade-offs |
 | **Discussion answers** | [`DISCUSSION.md`](DISCUSSION.md) | Parts 2.1 (alternatives), 2.2 (OpenClaw analysis), 2.3 (fork maintenance) |
 | **Working solution** | [`core/`](core/) + [`adapters/openclaw/`](adapters/openclaw/) | Framework-agnostic library + OpenClaw plugin |
-| **Tests** | [`core/test/`](core/test/) + [`adapters/openclaw/test/`](adapters/openclaw/test/) | 51 tests — cross-session sync, conflict resolution, noise filtering, compression |
+| **Tests** | [`core/test/`](core/test/) + [`adapters/openclaw/test/`](adapters/openclaw/test/) | 69 tests — cross-session sync, conflict resolution, noise filtering, compression, stress tests |
 | **Setup & run guide** | This file | Prerequisites, installation, configuration, smoke test |
 
 ## Architecture
@@ -196,6 +196,27 @@ npm test       # Node.js + vitest
 # or
 bun test       # Bun runtime
 ```
+
+### Test strategy: unit tests vs. live channel tests
+
+The automated test suite (69 tests across 7 files) validates the **core sync logic** — extraction, conflict detection, noise filtering, compression, and context assembly — using mock classifiers and a real SQLite database. Channels like `"telegram"` and `"discord"` appear as string labels in these tests; no real messaging platform is involved.
+
+This is intentional. True end-to-end channel tests would require a running OpenClaw gateway, configured bot credentials for each platform (Telegram bot token, Discord bot, etc.), and sending real messages through real APIs. These are fragile, slow, credential-dependent, and impossible to run in CI without infrastructure — so they are covered as **manual smoke tests** instead.
+
+**Automated tests prove:**
+- Facts propagate between session keys (different channels)
+- Conflicting facts get superseded (last-write-wins)
+- Noise messages are filtered and never stored
+- Compression triggers at the right thresholds
+- Token budgets are respected during injection
+- The OpenClaw adapter registers the correct hooks
+
+**Manual smoke test proves:**
+- The full pipeline works through real OpenClaw channels (see [Smoke Test](#smoke-test) above)
+- Real LLM classification extracts meaningful facts
+- Injected context actually influences the assistant's responses on other channels
+
+Together, the automated suite validates correctness of the logic, and the smoke test validates that the integration with OpenClaw and real channels works end-to-end.
 
 ## Configuration Options
 
