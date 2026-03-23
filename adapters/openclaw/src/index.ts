@@ -405,7 +405,7 @@ export function register(api: OpenClawPluginApi): void {
         const block = getEngine().getInjectionBlock(sessionKey, maxInjectedTokens);
         if (block) {
           log.info(`[cross-session-sync] injecting ${block.length} chars via before_prompt_build for session: ${sessionKey}`);
-          return { prependContext: `# Cross-Session Context\n\n${block}\n\n` };
+          return { prependContext: `# Cross-Session Context\n\n${block}\n\n# End Cross-Session Context\n\n` };
         }
       } catch (err) {
         log.error(`[cross-session-sync] injection error: ${err}`);
@@ -430,13 +430,19 @@ export function register(api: OpenClawPluginApi): void {
       // Skip internal sessions (slug generators, etc.)
       if (sessionKey.startsWith("temp:")) return;
 
-      // Strip our injected context prefix to get the real user prompt
+      // Strip our injected context prefix to get the real user prompt.
+      // Use the end-of-block marker for reliable detection, falling back
+      // to heuristic double-newline scanning if the marker is absent.
       let userPrompt = prompt;
       if (userPrompt.startsWith("# Cross-Session Context")) {
-        // Find the end of our injected block (double newline after block)
-        const endIdx = userPrompt.indexOf("\n\n", userPrompt.indexOf("\n\n") + 2);
-        if (endIdx > 0) {
-          userPrompt = userPrompt.slice(endIdx).trim();
+        const markerIdx = userPrompt.indexOf("# End Cross-Session Context");
+        if (markerIdx > 0) {
+          userPrompt = userPrompt.slice(markerIdx + "# End Cross-Session Context".length).trim();
+        } else {
+          const endIdx = userPrompt.indexOf("\n\n", userPrompt.indexOf("\n\n") + 2);
+          if (endIdx > 0) {
+            userPrompt = userPrompt.slice(endIdx).trim();
+          }
         }
       }
 

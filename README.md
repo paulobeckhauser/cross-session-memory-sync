@@ -10,6 +10,7 @@ Cross-session knowledge synchronization for AI agent frameworks. Enables selecti
 | **Discussion answers** | [`DISCUSSION.md`](DISCUSSION.md) | Parts 2.1 (alternatives), 2.2 (OpenClaw analysis), 2.3 (fork maintenance) |
 | **Working solution** | [`core/`](core/) + [`adapters/openclaw/`](adapters/openclaw/) | Framework-agnostic library + OpenClaw plugin |
 | **Tests** | [`core/test/`](core/test/) + [`adapters/openclaw/test/`](adapters/openclaw/test/) | 69 tests — cross-session sync, conflict resolution, noise filtering, compression, stress tests |
+| **Demo video** | [Cross-Session Memory Sync — Demo](https://youtu.be/hsva41IljAU?si=HMc2coIQHoCKzNXv) | End-to-end demonstration of cross-session fact extraction and injection |
 | **Setup & run guide** | This file | Prerequisites, installation, configuration, smoke test |
 
 ## Architecture

@@ -48,6 +48,14 @@ export class Extractor {
         (n) => n.depth === 0 && n.category !== nugget.category
       );
 
+      // Skip exact duplicates: if an active fact has identical normalized content,
+      // there is nothing new to store — avoid polluting the DAG with repeats.
+      const normalizedIncoming = normalizeContent(nugget.fact);
+      const isExactDupe = sameCategory.some(
+        (old) => normalizeContent(old.content) === normalizedIncoming
+      );
+      if (isExactDupe) continue;
+
       const toSupersede: string[] = [];
 
       for (const old of sameCategory) {
@@ -87,6 +95,10 @@ export class Extractor {
 
     return inserted;
   }
+}
+
+function normalizeContent(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9\s]/g, "").replace(/\s+/g, " ").trim();
 }
 
 function contentOverlaps(existing: string, incoming: string, sameCategory = false): boolean {
